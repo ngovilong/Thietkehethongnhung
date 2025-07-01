@@ -56,26 +56,26 @@ volatile float frequency = 0;
 volatile uint32_t last_capture_tick = 0;
 const uint32_t timeout_ms = 500;
 volatile uint32_t pulse_count = 0;
-uint32_t last_uart_tick = 0;
 double Temperature, VTmpSens, VrefeInt;
 #define VREFRINT 1.20
 #define ADCMAX 4095.0
 #define AVG_SLOPE 0.0043
 #define V25 1.43
 extern UART_HandleTypeDef huart2;
-uint32_t last_debug_tick = 0;
-uint32_t adc_duration = 0;
-uint32_t uart_duration = 0;
-uint32_t freq_duration = 0;
 #define CYCLE_MS 6000
 float saved_frequency = 0;
 float saved_temperature = 0;
-uint8_t lcd_sent = 0;
-uint32_t last_freq_tick = 0;
-uint8_t freq_measuring = 0;
-uint32_t freq_count = 0;
 uint16_t AdcRaw[2];
 uint8_t AdcConvCmplt = 0;
+uint32_t freq_tick_start = 0;
+uint8_t freq_started = 0;
+#define FRAME_MS 250
+#define TOTAL_FRAMES 8
+volatile uint32_t ic_val1 = 0, ic_val2 = 0;
+volatile uint8_t is_first = 0;
+volatile float measured_freq = 0;
+
+
 
 /* USER CODE END PV */
 
@@ -88,8 +88,16 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-    if (htim->Instance == TIM3) {
-        pulse_count++;
+    if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) {
+        if (!is_first) {
+            ic_val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+            is_first = 1;
+        } else {
+            ic_val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+            uint32_t diff = (ic_val2 > ic_val1) ? (ic_val2 - ic_val1) : (0xFFFF - ic_val1 + ic_val2);
+            measured_freq = 1e6 / diff; // 1 MHz timer clock
+            is_first = 0;
+        }
     }
 }
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
@@ -108,7 +116,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	pulse_count = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -139,9 +147,11 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_2);
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)AdcRaw, 2);
-  HAL_TIM_Base_Start(&htim3);
+  uint32_t frame_start = HAL_GetTick();
+  uint8_t frame_index = 0;
   lcd_init();
   lcd_clear();
+  uint8_t uart_sent = 0;
 
   /* USER CODE END 2 */
 
@@ -151,53 +161,60 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-      uint32_t cycle_start = HAL_GetTick();
-      pulse_count = 0;
-      freq_measuring = 1;
-      lcd_sent = 0;
-      while (HAL_GetTick() - cycle_start < CYCLE_MS) {
-          uint32_t now = HAL_GetTick();
-          uint32_t elapsed = now - cycle_start;
-          if (elapsed < 1000) {
+	  char msg[64];
+	  if (freq_started && HAL_GetTick() - freq_tick_start >= 1000) {
+	      saved_frequency = pulse_count;
+	      pulse_count = 0;
+	      freq_started = 0;
+	  }
+	      // Frame 0, 4, 6, 2: T4
+//	      if (frame_index == 0 || frame_index == 2 || frame_index == 4 || frame_index == 6) {
+//	          lcd_clear();
+//	          lcd_put_cur(0, 0);
+//	          sprintf(msg, "F:%.0fHz", saved_frequency);
+//	          lcd_send_string(msg);
+//	          lcd_put_cur(1, 0);
+//	          sprintf(msg, "T:%.1fC", saved_temperature);
+//	          lcd_send_string(msg);
+//	      }
 
-          }
-          else if (elapsed >= 1000 && freq_measuring) {
-              saved_frequency = pulse_count;
-              freq_measuring = 0;
-          }
-          else if (elapsed < 2000) {
-              if (AdcConvCmplt) {
-                  VrefeInt = (VREFRINT * ADCMAX) / (AdcRaw[0]);
-                  VTmpSens = (VrefeInt * AdcRaw[1]) / (ADCMAX);
-                  saved_temperature = (V25 - VTmpSens) / (AVG_SLOPE) + 25.0;
-                  AdcConvCmplt = 0;
-              }
-          }
-          else if (elapsed < 4000) {
-              char msg[100];
-              sprintf(msg, "Tan so = %.0f Hz\r\n\n", saved_frequency);
-              HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-              sprintf(msg, "Nhiet do = %.1f C\r\n\n", saved_temperature);
-              HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-              sprintf(msg, "Da gui len UART\r\n\n");
-              HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-              while (HAL_GetTick() - cycle_start < 4000);
-          }
-          else if (elapsed < 4500 && !lcd_sent) {
-              char line[17];
-              char msg[100];
-              lcd_clear();
-              lcd_put_cur(0, 0);
-              sprintf(line, "F:%.0fHz", saved_frequency);
-              lcd_send_string(line);
-              lcd_put_cur(1, 0);
-              sprintf(line, "T:%.1fC", saved_temperature);
-              lcd_send_string(line);
-              lcd_sent = 1;
-              sprintf(msg, "Da gui len lcd\r\n\n");
-              HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-          }
-      }
+	      // Frame 1, 5: T1 - đo tần số
+	      if (frame_index == 1 || frame_index == 5) {
+	    	  if (frame_index == 1 && !freq_started) {
+	    	      freq_tick_start = HAL_GetTick();
+	    	      freq_started = 1;
+	    	  } else if (HAL_GetTick() - freq_tick_start >= 1000) {
+	    	      saved_frequency = measured_freq;
+	    	      freq_started = 0;
+	    	  }
+
+	      }
+
+	      // Frame 2, 6: T2 - đo nhiệt độ
+	      if (frame_index == 2 || frame_index == 6) {
+	          if (AdcConvCmplt) {
+	              VrefeInt = (VREFRINT * ADCMAX) / AdcRaw[0];
+	              VTmpSens = (VrefeInt * AdcRaw[1]) / ADCMAX;
+	              saved_temperature = (V25 - VTmpSens) / AVG_SLOPE + 25.0;
+	              AdcConvCmplt = 0;
+	          }
+	      }
+
+	      // Frame 7: T3 - gửi UART
+	      if (frame_index == 7 && uart_sent == 0) {
+	          sprintf(msg, "Tan so = %.0f Hz\r\nNhiet do = %.1f C\r\n", saved_frequency, saved_temperature);
+	          HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+	          uart_sent = 1;
+	      }
+
+
+	      // Chờ hết frame
+	      while (HAL_GetTick() - frame_start < FRAME_MS);
+	      frame_start += FRAME_MS;
+	      frame_index = (frame_index + 1) % TOTAL_FRAMES;
+	      if (frame_index == 6) uart_sent = 0;
+
+
   }
   /* USER CODE END 3 */
 }
