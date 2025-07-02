@@ -106,6 +106,40 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
         AdcConvCmplt = 1;
     }
 }
+void Task1()
+{
+	  char msg[64];
+	  if (freq_started && HAL_GetTick() - freq_tick_start >= 1000) {
+	      saved_frequency = pulse_count;
+	      pulse_count = 0;
+	      freq_started = 0;
+	  }
+
+	    	  if (frame_index == 1 && !freq_started) {
+	    	      freq_tick_start = HAL_GetTick();
+	    	      freq_started = 1;
+	    	  } else if (HAL_GetTick() - freq_tick_start >= 1000) {
+	    	      saved_frequency = measured_freq;
+	    	      freq_started = 0;
+	    	  }
+
+
+}
+void Task2()
+{
+        if (AdcConvCmplt) {
+            VrefeInt = (VREFRINT * ADCMAX) / AdcRaw[0];
+            VTmpSens = (VrefeInt * AdcRaw[1]) / ADCMAX;
+            saved_temperature = (V25 - VTmpSens) / AVG_SLOPE + 25.0;
+            AdcConvCmplt = 0;
+        }
+    }
+void Task3()
+{
+    sprintf(msg, "Tan so = %.0f Hz\r\nNhiet do = %.1f C\r\n", saved_frequency, saved_temperature);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+    uart_sent = 1;
+}
 /* USER CODE END 0 */
 
 /**
@@ -161,60 +195,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  char msg[64];
-	  if (freq_started && HAL_GetTick() - freq_tick_start >= 1000) {
-	      saved_frequency = pulse_count;
-	      pulse_count = 0;
-	      freq_started = 0;
-	  }
-	      // Frame 0, 4, 6, 2: T4
-//	      if (frame_index == 0 || frame_index == 2 || frame_index == 4 || frame_index == 6) {
-//	          lcd_clear();
-//	          lcd_put_cur(0, 0);
-//	          sprintf(msg, "F:%.0fHz", saved_frequency);
-//	          lcd_send_string(msg);
-//	          lcd_put_cur(1, 0);
-//	          sprintf(msg, "T:%.1fC", saved_temperature);
-//	          lcd_send_string(msg);
-//	      }
-
-	      // Frame 1, 5: T1 - đo tần số
-	      if (frame_index == 1 || frame_index == 5) {
-	    	  if (frame_index == 1 && !freq_started) {
-	    	      freq_tick_start = HAL_GetTick();
-	    	      freq_started = 1;
-	    	  } else if (HAL_GetTick() - freq_tick_start >= 1000) {
-	    	      saved_frequency = measured_freq;
-	    	      freq_started = 0;
-	    	  }
-
-	      }
-
-	      // Frame 2, 6: T2 - đo nhiệt độ
-	      if (frame_index == 2 || frame_index == 6) {
-	          if (AdcConvCmplt) {
-	              VrefeInt = (VREFRINT * ADCMAX) / AdcRaw[0];
-	              VTmpSens = (VrefeInt * AdcRaw[1]) / ADCMAX;
-	              saved_temperature = (V25 - VTmpSens) / AVG_SLOPE + 25.0;
-	              AdcConvCmplt = 0;
-	          }
-	      }
-
-	      // Frame 7: T3 - gửi UART
+      if (frame_index == 1 || frame_index == 5) {
+    	  Task1();
+      }
+    	  if (frame_index == 2 || frame_index == 6)
+    	  {
+    		  Task2();
+    	  }
 	      if (frame_index == 7 && uart_sent == 0) {
-	          sprintf(msg, "Tan so = %.0f Hz\r\nNhiet do = %.1f C\r\n", saved_frequency, saved_temperature);
-	          HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-	          uart_sent = 1;
+	    	  Task3();
 	      }
-
-
-	      // Chờ hết frame
 	      while (HAL_GetTick() - frame_start < FRAME_MS);
 	      frame_start += FRAME_MS;
 	      frame_index = (frame_index + 1) % TOTAL_FRAMES;
 	      if (frame_index == 6) uart_sent = 0;
-
-
   }
   /* USER CODE END 3 */
 }
